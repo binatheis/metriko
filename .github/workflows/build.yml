@@ -86,6 +86,14 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      # Inside the manylinux container the checkout is owned by a different uid
+      # than the one running git, which git refuses to touch ("dubious
+      # ownership"), so the submodule/cache-key steps would fail.
+      - name: Trust the workspace (container only)
+        if: matrix.container != ''
+        shell: bash
+        run: git config --global --add safe.directory "${{ github.workspace }}" && git config --global --add safe.directory '*'
+
       # ---------------------------------------------------------------- python
       # The abi3 wheel is built with 3.12 (an abi3 build must not use a newer
       # interpreter than the tag it claims); 3.13 is only used to *test* it.

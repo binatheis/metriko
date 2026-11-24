@@ -139,11 +139,9 @@ jobs:
           key: ${{ matrix.name }}-deps-${{ hashFiles('deps-sha.txt', 'tools/build_suitesparse.py', 'conanfile.py') }}
           restore-keys: ${{ matrix.name }}-deps-
 
-      # 3) conan packages (nanobind, CLI11, OpenBLAS).
-      - uses: conan-io/setup-conan@ed3942a6883243f4af84e13e49c972f9440fa1c2 # v1.4.0
-        with:
-          cache_packages: true
-
+      # 3) conan packages (nanobind, CLI11, OpenBLAS). conan itself is installed
+      #    with the platform interpreter (the manylinux container has no
+      #    system python3, so the setup-conan action cannot run there).
       - uses: actions/cache@v4
         with:
           path: ~/.conan2
@@ -163,8 +161,11 @@ jobs:
           echo "PY313=$P13" >> "$GITHUB_ENV"
           "$BP" -m pip install --upgrade pip
           "$BP" -m pip install \
-            "scikit-build-core>=0.10" "nanobind==2.12.0" uv \
+            "scikit-build-core>=0.10" "nanobind==2.12.0" uv conan \
             cmake ninja "${{ matrix.repair }}" pytest numpy
+          # console scripts (conan, uv, cmake, ninja...) land in the interpreter's
+          # scripts dir, which is not on PATH for the manylinux interpreters
+          "$BP" -c "import sysconfig; print(sysconfig.get_path('scripts'))" >> "$GITHUB_PATH"
 
       - name: Conan profile
         shell: bash

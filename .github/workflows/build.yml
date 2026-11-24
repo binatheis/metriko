@@ -67,7 +67,7 @@ jobs:
             python313: ""
             repair: delvewheel
           - name: macos-arm64
-            os: macos-15
+            os: macos-14
             container: ""
             profile: macos-armv8
             suitesparse: suitesparse-macos-arm64
@@ -133,10 +133,16 @@ jobs:
         shell: bash
         run: git submodule status deps/SuiteSparse deps/pmp-library > deps-sha.txt
 
+      - name: Dependency cache key
+        shell: bash
+        run: |
+          echo "SS_KEY=${{ matrix.name }}-deps-${{ hashFiles('deps-sha.txt', 'tools/build_suitesparse.py', 'conanfile.py') }}" >> "$GITHUB_ENV"
+          printf 'SuiteSparse cache key: %s\n' "${{ matrix.name }}-deps-${{ hashFiles('deps-sha.txt', 'tools/build_suitesparse.py', 'conanfile.py') }}"
+
       - uses: actions/cache@v4
         with:
           path: .deps
-          key: ${{ matrix.name }}-deps-${{ hashFiles('deps-sha.txt', 'tools/build_suitesparse.py', 'conanfile.py') }}
+          key: ${{ env.SS_KEY }}
           restore-keys: ${{ matrix.name }}-deps-
 
       # 3) conan packages (nanobind, CLI11, OpenBLAS). conan itself is installed
@@ -183,6 +189,15 @@ jobs:
         shell: bash
         run: |
           "${{ matrix.python }}" tools/build_suitesparse.py --jobs 4 --conan-dir build/conan
+
+      # Save the (expensive) SuiteSparse install even if a later step fails.
+      - name: Save dependency cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .deps
+          key: ${{ env.SS_KEY }}
 
       # ---------------------------------------------------------------- build
       # ONE compilation. `build.targets` in pyproject.toml already contains

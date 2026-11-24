@@ -47,7 +47,12 @@ def cmake_set(text: str, name: str) -> str | None:
 
 def conan_openblas(conan_dir: Path, build_type: str) -> tuple[str, str] | None:
     """(library file, include dir) of the Conan OpenBLAS, read from the CMakeDeps data files."""
-    files = sorted(conan_dir.glob(f"*openblas*-{build_type.lower()}-*-data.cmake"))
+    # the generator names the file after the package ("OpenBLAS-release-x86_64-data.cmake"); a case-sensitive
+    # filesystem (Linux/macOS runners) does not match a lowercase glob, so filter the names ourselves
+    files = sorted(
+        p for p in conan_dir.glob("*-data.cmake")
+        if "openblas" in p.name.lower() and build_type.lower() in p.name.lower()
+    )
     if not files:
         return None
     text = files[0].read_text(encoding="utf-8")

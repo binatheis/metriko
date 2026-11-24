@@ -78,9 +78,15 @@ inline void repair_crossing_tedges(Emesh& tm, const int max_iter = 10) {
     for (int it = 0; it < max_iter; ++it) {
         auto cs = find_tedge_contacts(tm);
         if (cs.empty()) return;
+        // a tedge that cannot be unfolded (a snapped chord between non-adjacent vertices, say) is left as it is:
+        // this pass is a repair, its failure must not abort the run
+        auto try_reroute = [&](int teid) {
+            try { return tm.tedges[teid].id != -1 && tm.reroute_tedge(teid); }
+            catch (const std::exception&) { return false; }
+        };
         for (auto& c: cs) {
-            if (tm.tedges[c.te_ndp].id != -1 && tm.reroute_tedge(c.te_ndp)) { std::println("[crossing] rerouted teid {} (contact with teid {})", c.te_ndp, c.te_seg); continue; }
-            if (tm.tedges[c.te_seg].id != -1 && tm.reroute_tedge(c.te_seg)) { std::println("[crossing] rerouted teid {} (contact with teid {})", c.te_seg, c.te_ndp); }
+            if (try_reroute(c.te_ndp)) { std::println("[crossing] rerouted teid {} (contact with teid {})", c.te_ndp, c.te_seg); continue; }
+            if (try_reroute(c.te_seg)) std::println("[crossing] rerouted teid {} (contact with teid {})", c.te_seg, c.te_ndp);
         }
     }
 }

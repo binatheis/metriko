@@ -12,6 +12,16 @@
 #include "injective_barrier.h"
 
 namespace metriko {
+    // diagnostics for the iterative rounding: how many rounding steps run, and how much of the parameterization
+    // time they spend rebuilding the constant blocks of the constraint jacobian
+    inline int&    rounding_steps()    { static thread_local int v = 0; return v; }
+    // diagnostics for the LM factorization: how often the symbolic analysis runs (it must not, when the pattern
+    // is stable) and how the time splits between the copy, the analysis and the numeric factorization
+    inline int&    lm_analyze_calls() { static thread_local int v = 0; return v; }
+    inline double& lm_copy_secs()     { static thread_local double v = 0; return v; }
+    inline double& lm_analyze_secs()  { static thread_local double v = 0; return v; }
+    inline double& lm_numeric_secs()  { static thread_local double v = 0; return v; }
+    inline double& rounding_init_secs() { static thread_local double v = 0; return v; }
     class Integration {
     public:
         const SprsD &G2;

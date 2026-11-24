@@ -1,3 +1,9 @@
 [submodule "example/polyscope"]
 	path = example/polyscope
 	url = https://github.com/nmwsharp/polyscope.git
+[submodule "deps/SuiteSparse"]
+	path = deps/SuiteSparse
+	url = https://github.com/DrTimothyAldenDavis/SuiteSparse
+[submodule "deps/pmp-library"]
+	path = deps/pmp-library
+	url = https://github.com/pmp-library/pmp-library

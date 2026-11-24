@@ -10,6 +10,7 @@
 #define METRIKO_LEVENBERG_MARQUARDT_H
 #include <iostream>
 #include "matrix_ops.h"
+#include "metriko/api.h"
 
 namespace metriko {
     template<class SolverTraits>
@@ -112,47 +113,68 @@ namespace metriko {
             VecXd Eprv;
             SprsD J;
 
+            double t_jac = 0, t_damp = 0, t_fact = 0, t_solve = 0;
+            auto tick   = [] { return std::chrono::steady_clock::now(); };
+            auto tock   = [](const std::chrono::steady_clock::time_point& a) {
+                return std::chrono::duration<double>(std::chrono::steady_clock::now() - a).count();
+            };
+
+            auto report = [&] {
+                if (!detail::timings_enabled()) return;
+                std::fprintf(stderr, "[metriko] LM system: %d unknowns, %d residuals, %d nnz (%.1f per row)\n",
+                             static_cast<int>(ST->xSize), static_cast<int>(ST->ESize),
+                             static_cast<int>(J.nonZeros()),
+                             J.nonZeros() / static_cast<double>(std::max(1, (int)J.rows())));
+                std::fprintf(stderr, "[metriko] LM breakdown: jacobian %.1f s, damping %.1f s, factorize %.1f s, solve %.1f s\n",
+                             t_jac, t_damp, t_fact, t_solve);
+                std::fflush(stderr);
+            };
+
             curIter = 0;
-            ST->objective_jacobian(prevx, ECur, J, true);
-            DT->init(J, dampJ);
+            { auto t = tick(); ST->objective_jacobian(prevx, ECur, J, true); t_jac += tock(t); }
+            { auto t = tick(); DT->init(J, dampJ);                       t_damp += tock(t); }
 
             do {
                 ST->pre_iteration(prevx);
                 double prvEnergy2 = ECur.squaredNorm();
-                rhs = -(J.transpose() * ECur);
+                { auto t = tick(); rhs = -(J.transpose() * ECur); t_jac += tock(t); }
 
                 fooOptimality = rhs.lpNorm<Infinity>();
                 if (fooOptimality < fooTolerance) { x = prevx; break; }
 
                 //solving to get the LM direction
-                if (!LS->factorize(dampJ)) { std::cout << "Solver Failed to factorize! " << std::endl; return false; }
+                { auto t = tick();
+                  if (!LS->factorize(dampJ)) { std::cout << "Solver Failed to factorize! " << std::endl; report(); return false; }
+                  t_fact += tock(t); }
 
-                LS->solve(rhs, dir);
+                { auto t = tick(); LS->solve(rhs, dir); t_solve += tock(t); }
 
-                if (dir.norm() < funcTolerance) { x = prevx; return true; }
+                if (dir.norm() < funcTolerance) { x = prevx; report(); return true; }
 
                 Eprv = ECur;
 
-                ST->objective_jacobian(prevx + dir, ECur, J, false);
+                { auto t = tick(); ST->objective_jacobian(prevx + dir, ECur, J, false); t_jac += tock(t); }
                 double newEnergy2 = ECur.squaredNorm();
                 energy = newEnergy2;
                 bool accepted = prvEnergy2 > newEnergy2;
                 x = accepted ? prevx + dir : prevx;
 
                 if (std::abs(prvEnergy2 - newEnergy2) < funcTolerance) { break; }
-                if (accepted) ST->objective_jacobian(x, ECur, J, true);
-                else ECur = Eprv;
+                { auto t = tick(); if (accepted) ST->objective_jacobian(x, ECur, J, true); t_jac += tock(t); }
+                if (!accepted) ECur = Eprv;
 
                 energy = ECur.squaredNorm();
 
-                DT->update(J, prvEnergy2, newEnergy2, dampJ);
+                { auto t = tick(); DT->update(J, prvEnergy2, newEnergy2, dampJ); t_damp += tock(t); }
 
-                if (ST->post_iteration(x)) { return true; }
+                if (ST->post_iteration(x)) { report(); return true; }
+                if (detail::stage_overrun()) throw StageTimeout(RemeshStage::parameterization, "the initial integration ran past the stage timeout");
 
                 curIter++;
                 prevx = x;
             } while (curIter <= maxIter);
 
+            report();
             return false;
         }
     };

@@ -10,6 +10,17 @@
 namespace metriko {
 
 inline bool Emesh::collapse_tquad_prepare(int tqid, Tqaux& aux) const {
+    aux = {};
+    if (collapse_tquad_prepare_impl(tqid, aux, false)) return true;
+    aux = {};
+    return collapse_tquad_prepare_impl(tqid, aux, true);
+}
+
+// a zero-width band can end on a plain junction that carries no crossing point (n_adj_tqs == 2, not fixed).
+// then the zero thalf's endpoints are still needed in the merged line: without them prepare cannot know how
+// the band is closed at that end (a leftover "lens"). keep_zero_ends includes them; the plain call does not,
+// so the common cases keep the exact behaviour they had.
+inline bool Emesh::collapse_tquad_prepare_impl(int tqid, Tqaux& aux, bool keep_zero_ends) const {
     const auto& tq = tquads[tqid];
     if (tq.id == -1) return false;
 
@@ -61,8 +72,15 @@ inline bool Emesh::collapse_tquad_prepare(int tqid, Tqaux& aux) const {
         return n_adj_tqs(th0.id) >= n_adj_tqs(th0.twid) ? std::pair{ th0.nid_fr(), s0 } : std::pair{ th0.nid_to(), s1 };
     };
 
+    vec<int> zero_ends;
+    if (keep_zero_ends)
+        for (const auto* thids : {&aux.thids_t, &aux.thids_b})
+            for (int thid : *thids)
+                if (zero(thid)) { zero_ends.push_back(thalfs[thid].nid_fr()); zero_ends.push_back(thalfs[thid].nid_to()); }
+
     auto must_use_in_aux = [&](int nid, int thid) { // a crossing point or a singular point, not tq corners
         if (rg::contains(std::array{th_l.nid_fr(), th_l.nid_to(), th_r.nid_fr(), th_r.nid_to()}, nid)) return false;
+        if (keep_zero_ends && rg::contains(zero_ends, nid)) return true;
         return n_adj_tqs(thid) != 2 || is_fixed(nid);
     };
 

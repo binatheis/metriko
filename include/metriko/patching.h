@@ -12,6 +12,7 @@
 #include <set>
 #include <map>
 #include <queue>
+#include <deque>
 #include <Eigen/Geometry>
 #include <igl/AABB.h>
 #include <igl/per_face_normals.h>
@@ -121,12 +122,131 @@ inline void conformalize_on_surface(MatXd& pos, const MatXi& idx, const MatXd& V
 }
 
 // welded (and optionally smoothed) quad mesh of the q-faces. face (i, j) still corresponds to qfaces[i].qhalfs[j].port1()
-inline std::pair<MatXd, MatXi> extract_quad_mesh(const Hmesh& hm, const vec<qex::Qface>& qfaces, const bool refine = true) {
+// close the boundary of an extracted quad mesh: the boundary is the set of edges with one incident face. it is
+// decomposed into **simple cycles** and each one is closed: a cycle of four edges is exactly one dropped q-face
+// ring and becomes a quad again, a longer one is filled with a triangle fan from its centroid (the result is
+// watertight and quad-dominant, never open).
+//
+// the decomposition has to cope with what the extractor really produces:
+//  - flipped quads, which make the boundary non-orientable (a directed walk then drops loops), so the boundary
+//    is handled as an *undirected* graph;
+//  - a vertex shared by two holes (degree 4), so the edges at every vertex are paired and the pairing is
+//    followed; the closed walks that come out are then split at their repeated vertices into simple cycles.
+// every fill face is oriented against the quad it borders. returns the fill triangles; the centroid vertices
+// are appended to pos and the quads to idx.
+inline MatXi fill_holes(MatXd& pos, MatXi& idx) {
+    std::map<std::pair<int, int>, int> ecount; // undirected edge -> incident faces
+    std::map<std::pair<int, int>, int> dir;    // directed quad edge -> quad
+    for (int i = 0; i < idx.rows(); ++i)
+    for (int j = 0; j < 4; ++j) {
+        const int a = idx(i, j), b = idx(i, (j + 1) % 4);
+        ++ecount[{std::min(a, b), std::max(a, b)}];
+        dir[{a, b}] = i;
+    }
+
+    vec<std::pair<int, int>> bedges;         // boundary edges
+    std::map<int, vec<int>>  vadj;           // vertex -> incident boundary edge ids
+    for (const auto& [e, c]: ecount) {
+        if (c != 1) continue;
+        const int id = static_cast<int>(bedges.size());
+        bedges.push_back(e);
+        vadj[e.first].push_back(id);
+        vadj[e.second].push_back(id);
+    }
+
+    // an odd degree cannot happen on a manifold boundary; leave such a component open rather than making a mess
+    bool even = true;
+    for (auto& [v, es]: vadj) { std::sort(es.begin(), es.end()); if (es.size() % 2) { even = false; break; } }
+
+    vec<vec<int>> loops;
+    if (even) {
+        std::map<std::pair<int, int>, int> partner; // (vertex, edge) -> the edge it is paired with at that vertex
+        for (auto& [v, es]: vadj)
+            for (size_t k = 0; k + 1 < es.size(); k += 2) {
+                partner[{v, es[k]}]     = es[k + 1];
+                partner[{v, es[k + 1]}] = es[k];
+            }
+        std::set<int> used;
+        for (int e0 = 0; e0 < static_cast<int>(bedges.size()); ++e0) {
+            if (used.contains(e0)) continue;
+            vec<int> walk;
+            int e = e0;
+            int from = bedges[e0].first;
+            bool ok = true;
+            while (true) {
+                used.insert(e);
+                const auto [a, b] = bedges[e];
+                const int to = (a == from) ? b : a;
+                walk.push_back(from);
+                if (to == walk.front()) break;
+                auto it = partner.find({to, e});
+                if (it == partner.end() || used.contains(it->second)) { ok = false; break; }
+                from = to;
+                e    = it->second;
+            }
+            if (!ok || walk.size() < 3) continue;
+            // split the closed walk at its repeated vertices into simple cycles
+            vec<int> path;
+            std::map<int, int> on;
+            for (int v: walk) {
+                if (on.contains(v)) {
+                    const int s = on.at(v);
+                    vec<int> cyc(path.begin() + s, path.end());
+                    if (cyc.size() >= 3) loops.push_back(cyc);
+                    for (size_t k = s; k < path.size(); ++k) on.erase(path[k]);
+                    path.resize(s);
+                }
+                on[v] = static_cast<int>(path.size());
+                path.push_back(v);
+            }
+            if (path.size() >= 3) loops.push_back(path);
+        }
+    }
+
+    vec<arr<int, 4>> quads;
+    vec<Row3i>       tris;
+    for (const auto& cyc: loops) {
+        const int k = static_cast<int>(cyc.size());
+        // a boundary quad edge is directed a->b with the quad on its left, so the fill face runs b->a
+        bool rev = true;
+        for (int i = 0; i < k; ++i) {
+            if (dir.contains({cyc[i], cyc[(i + 1) % k]})) { rev = true;  break; }
+            if (dir.contains({cyc[(i + 1) % k], cyc[i]})) { rev = false; break; }
+        }
+        vec<int> loop = cyc;
+        if (rev) rg::reverse(loop);
+        if (loop.size() == 4) {
+            quads.push_back({loop[0], loop[1], loop[2], loop[3]});
+            continue;
+        }
+        Row3d mid = Row3d::Zero();
+        for (int v: loop) mid += pos.row(v);
+        mid /= static_cast<double>(loop.size());
+        const int c = static_cast<int>(pos.rows());
+        pos.conservativeResize(pos.rows() + 1, 3);
+        pos.row(c) = mid;
+        for (int i = 0; i < static_cast<int>(loop.size()); ++i)
+            tris.emplace_back(loop[i], loop[(i + 1) % loop.size()], c);
+    }
+
+    if (!quads.empty()) {
+        const int n = static_cast<int>(idx.rows());
+        idx.conservativeResize(n + static_cast<int>(quads.size()), 4);
+        for (int i = 0; i < static_cast<int>(quads.size()); ++i)
+            for (int j = 0; j < 4; ++j) idx(n + i, j) = quads[i][j];
+    }
+    MatXi fill(tris.size(), 3);
+    for (int i = 0; i < static_cast<int>(tris.size()); ++i)
+        for (int j = 0; j < 3; ++j) fill(i, j) = tris[i](j);
+    return fill;
+}
+inline std::pair<MatXd, MatXi> extract_quad_mesh(const Hmesh& hm, const vec<qex::Qface>& qfaces, const bool refine = true, MatXi* fill = nullptr) {
     MatXd pos, pos_w;
     MatXi idx, idx_w;
     quad_soup(qfaces, pos, idx);
     weld_quad_soup(pos, idx, pos_w, idx_w);
     if (refine) conformalize_on_surface(pos_w, idx_w, hm.pos, hm.idx);
+    if (fill) *fill = fill_holes(pos_w, idx_w);
     return {pos_w, idx_w};
 }
 

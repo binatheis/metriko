@@ -14,6 +14,8 @@
 #include <igl/unique.h>
 #include "iter_rounding_common.h"
 
+#include "metriko/api.h"
+
 namespace metriko {
     class NaiveIntegration : public Integration {
     public:
@@ -148,6 +150,10 @@ namespace metriko {
             UExt.resize(UFull.rows() + F2.size(), UFull.cols() + F2.size());
             UExt.setFromTriplets(ueT.begin(), ueT.end());
 
+            if (detail::timings_enabled())
+                std::fprintf(stderr, "[metriko] integration system: faces %d, vertices %d, full field %d, reduced %d, face vars %d, Cfull %dx%d (nnz %d)\n",
+                             N, n, (int)UFull.rows(), (int)UFull.cols(), (int)F2.size(),
+                             (int)Cfull.rows(), (int)Cfull.cols(), (int)Cfull.nonZeros());
             VecXd E_;
             SprsD J_;
             objective_jacobian(XF_Small, E_, J_, false);

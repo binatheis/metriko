@@ -104,7 +104,7 @@ namespace metriko {
             // 2: cleaning parmMats and permIdcs to see if there is a constraint or reveal singularity-from-transition
             if (!v.isBoundary()) {
                 std::set temp(permIdcs.begin(), permIdcs.end());
-                vec idcs(temp.begin(), temp.end());
+                vec<int> idcs(temp.begin(), temp.end());
                 vec<MatXi> mats(idcs.size());
 
                 for (int j = 0; j < idcs.size(); j++) {

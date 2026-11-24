@@ -6,6 +6,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
 #pragma once
+#include <chrono>
+#include <cstdio>
+#include "metriko/api.h"
 namespace metriko {
     inline bool RosyParameterization::integ() {
         SprsD fullx2Nfunc = vtrans2cut * uncompress;
@@ -80,6 +83,9 @@ namespace metriko {
         );
 
         if (!success && verbose) std::cout << "Rounding has failed!" << std::endl;
+        if (detail::timings_enabled())
+            std::fprintf(stderr, "[metriko] rounding: %d steps, %.3f s in the constant blocks\n",
+                         rounding_steps(), rounding_init_secs());
 
 
         VecXd NF = fullx2Nfunc * fullx;

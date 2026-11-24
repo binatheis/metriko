@@ -12,6 +12,10 @@
 #include <igl/grad.h>
 #include <igl/local_basis.h>
 #include <igl/polar_svd.h>
+#include "metriko/api.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "metriko/hmesh/hmesh.h"
 #include "metriko/solver/sparse_solver.h"
 
@@ -160,38 +164,68 @@ inline MatXd seamless_slim(
     vec<int> diag(2 * m);
     for (int g = 0; g < 2 * m; ++g) diag[g] = slot(g, g);
 
+    // per-thread assembly buffers (see the local step below): capped so that the extra memory stays bounded
+#ifdef _OPENMP
+    const int nAsm = std::min(std::max(1, omp_get_max_threads()), 8);
+#else
+    const int nAsm = 1;
+#endif
+    vec<vec<double>> kAsm(nAsm), rAsm(nAsm);
+    for (auto& b: kAsm) b.assign(K.nonZeros(), 0.);
+    for (auto& b: rAsm) b.assign(2 * m, 0.);
+
     // the jacobian of a face, rows u, v and columns along the frame
     auto jacobian = [&](const MatXd& uv, int f) {
         Eigen::Matrix2d J = Eigen::Matrix2d::Zero();
         for (int j = 0; j < 3; ++j) J += uv.row(hc.idx(f, j)).transpose() * Eigen::RowVector2d(dx(f, j), dy(f, j));
         return J;
     };
+    // per-face energy, summed in face order: an OpenMP reduction would sum in the scheduling order, and the
+    // last-bit differences flip the line-search acceptance (and with it the whole extraction) between runs
+    vec<double> eFace(nf, 0.);
     std::function<double(MatXd&)> energy = [&](MatXd& uv) {
-        double e = 0;
-        #pragma omp parallel for reduction(+:e)
+        #pragma omp parallel for schedule(static)
         for (int f = 0; f < nf; ++f) {
             auto   J   = jacobian(uv, f);
             double det = J.determinant();
-            e += det > 0 ? area(f) * J.squaredNorm() * (1 + 1 / (det * det)) : std::numeric_limits<double>::infinity();
+            eFace[f] = det > 0 ? area(f) * J.squaredNorm() * (1 + 1 / (det * det)) : std::numeric_limits<double>::infinity();
         }
+        double e = 0;
+        for (int f = 0; f < nf; ++f) e += eFace[f];
         return e;
     };
 
     constexpr double proximal = 1e-4; // as in libigl
     SparseLLT<SprsD>  llt;   // fast, but a nearly degenerate face can make it fail
     SparseLDLT<SprsD> ldlt;  // then this one
+    deterministic(llt);
+    deterministic(ldlt);
     VecXd  z  = shrink(uv0);
     MatXd  uv = expand(z);
     double e  = energy(uv);
-    int    small = 0;
+    int    n_small = 0;
+    int    it_done = 0;
 
     for (int it = 0; it < max_iter; ++it) {
         // 5: per face, the closest rotation R and the weights W of the quadratic proxy (the local step), and its
         //    block of the weighted least squares || W (J - R) ||^2 over the free points of the face (the global step)
+        // deterministic assembly: the atomics below make the floating-point accumulation order (and so the
+        // result) depend on thread scheduling. each thread fills its own buffer instead and the buffers are
+        // summed in thread-index order, which is reproducible for a fixed number of threads.
         std::fill(K.valuePtr(), K.valuePtr() + K.nonZeros(), 0.);
         VecXd rhs = VecXd::Zero(2 * m);
-        #pragma omp parallel for
+        for (auto& b: kAsm) std::fill(b.begin(), b.end(), 0.);
+        for (auto& b: rAsm) std::fill(b.begin(), b.end(), 0.);
+        #pragma omp parallel for schedule(static)
         for (int f = 0; f < nf; ++f) {
+            const int tid =
+#ifdef _OPENMP
+                omp_get_thread_num() % nAsm;
+#else
+                0;
+#endif
+            auto& kAsmT = kAsm[tid];
+            auto& rAsmT = rAsm[tid];
             Eigen::Matrix2d C = Eigen::Matrix2d::Zero();          // the part of J that does not move
             Eigen::Matrix<double, 4, 6> B = Eigen::Matrix<double, 4, 6>::Zero(); // J00, J01, J10, J11 by the free points
             for (int j = 0; j < 3; ++j) {
@@ -228,15 +262,17 @@ inline MatXd seamless_slim(
             for (int a = 0; a < 6; ++a) {
                 int ga = var[hc.idx(f, a / 2)];
                 if (ga < 0) continue;
-                #pragma omp atomic
-                rhs(2 * ga + a % 2) += rf(a);
+                rAsmT[2 * ga + a % 2] += rf(a);
                 for (int c = 0; c < 6; ++c) {
                     int p = slots[f][a * 6 + c];
                     if (p < 0) continue;
-                    #pragma omp atomic
-                    K.valuePtr()[p] += Kf(a, c);
+                    kAsmT[p] += Kf(a, c);
                 }
             }
+        }
+        for (int t = 0; t < nAsm; ++t) { // merge in thread-index order: deterministic
+            for (int i = 0; i < K.nonZeros(); ++i) K.valuePtr()[i] += kAsm[t][i];
+            for (int i = 0; i < 2 * m; ++i) rhs(i) += rAsm[t][i];
         }
         for (int g = 0; g < m; ++g)
         for (int i = 0; i < 2; ++i) {
@@ -257,9 +293,15 @@ inline MatXd seamless_slim(
         // 6: the step toward it that flips no face, and the energy there
         double e_new = igl::flip_avoiding_line_search(hc.idx, uv, dst, energy, e);
         z = shrink(uv);
-        small = std::abs(e - e_new) < rel_tol * std::abs(e_new) ? small + 1 : 0; // a single short step is the flip barrier, not convergence
+        n_small = std::abs(e - e_new) < rel_tol * std::abs(e_new) ? n_small + 1 : 0; // a single short step is the flip barrier, not convergence
         e = e_new;
-        if (small == 2) break;
+        it_done = it + 1;
+        if (n_small == 2) break;
+        if (detail::stage_overrun()) throw StageTimeout(RemeshStage::slim, "slim ran past the stage timeout");
+    }
+    if (detail::timings_enabled()) {
+        std::fprintf(stderr, "[metriko] slim: %d of %d iterations, %d unknowns, energy %.6g\n", it_done, max_iter, 2 * m, e);
+        std::fflush(stderr);
     }
     return uv;
 }

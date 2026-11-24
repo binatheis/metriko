@@ -1,6 +1,7 @@
 #ifndef METRIKO_LIB_H
 #define METRIKO_LIB_H
 #include <expected>
+#include "metriko/api.h"
 #include "hmesh/hmesh.h"
 #include "nvec/face_rosy_field.h"
 #include "igm/parameterization.h"
@@ -18,10 +19,7 @@
 #include "patching.h"
 
 namespace metriko {
-constexpr int    slim_max_iter = 50;
-constexpr double slim_rel_tol  = 1e-4;
-
-struct RemeshStage {
+struct QuadrangulationParts {
     std::unique_ptr<Hmesh> hmesh;
     std::unique_ptr<Mgrph> mgrph;
     std::unique_ptr<Emesh> emesh;
@@ -33,21 +31,21 @@ struct RemeshStage {
     MatXd                  q_pos;
     MatXi                  q_idx;
     MatXi                  q_val;
+    MatXi                  q_fill; // triangles that close the boundary loops left by the dropped q-face rings
+    int                    holes = 0;
 };
 
-struct RemeshResult {
-    MatXd pos;
-    MatXi idx;
-    MatXi val;
-};
-
-inline RemeshStage compute_quadrangulation_impl(
+inline QuadrangulationParts compute_quadrangulation_impl(
     const MatXd& V,
     const MatXi& F,
     const double scale,
     const bool calign = false,
-    const bool refine = true
+    const bool refine = true,
+    const int slim_iter = RemeshOptions{}.slim_max_iter,
+    const double slim_tol = RemeshOptions{}.slim_rel_tol
 ) {
+    detail::StageClock clock;
+    clock.mark(RemeshStage::field);
     auto unit = grid_unit(V, scale);
     auto hm   = std::make_unique<Hmesh>(MatXd(V / unit), F);
     auto rawf = FaceRosyField(*hm, 4, calign? FieldType::CurvatureAligned : FieldType::Smoothest);
@@ -56,6 +54,7 @@ inline RemeshStage compute_quadrangulation_impl(
     auto cmbf = compute_combbed_field(rawf, seam);
     auto extf = compute_extrinsic_field(*cmbf, 4);
 
+    clock.mark(RemeshStage::parameterization);
     auto rp = RosyParameterization(*hm, *cutm, extf, cmbf->singular, cmbf->matching, seam, 4, scale);
     rp.localInjectivity = true;
     rp.setup();
@@ -68,12 +67,16 @@ inline RemeshStage compute_quadrangulation_impl(
         hm->cfn(f.id * 3 + 2) = complex{rp.cfn(f.id, 8), rp.cfn(f.id, 9)};
     }
 
+    clock.mark(RemeshStage::tmesh);
     auto mg = std::make_unique<Mgrph>(*hm, cmbf->matching, cmbf->singular);
     auto tm = std::make_unique<Emesh>(*mg);
+
+    clock.mark(RemeshStage::quantization);
     auto X  = compute_quantization(*tm, *mg);
     validate_quantization(*tm, X);
     tm->set_x(X);
 
+    clock.mark(RemeshStage::collapse);
     for (int i = 0; i < 100; ++i) {
         for (Ehalf th0 : tm->thalfs) {
             if (th0.id == -1 || th0.x != 0) continue;
@@ -96,6 +99,7 @@ inline RemeshStage compute_quadrangulation_impl(
 
     repair_crossing_tedges(*tm);
 
+    clock.mark(RemeshStage::embedding);
     ///--- cut the original mesh along the collapsed t-mesh ---///
     vec<bool> seam1;
     VecXi matching1;
@@ -104,10 +108,12 @@ inline RemeshStage compute_quadrangulation_impl(
     auto hm_emb = compute_embedding_cut_hmesh(*hm, *tm, seam, cmbf->matching, cmbf->singular, seam1, matching1, singular1, hdata);
     auto hm_cut = compute_cut_mesh(*hm_emb, seam1);
 
+    clock.mark(RemeshStage::tutte);
     MatXd uv_ebd = compute_tutte_parameterization(*hm_emb, *tm, seam1, hdata);
     MatXd uv_cut(hm_cut->nV, 2);
     for (auto v: hm_cut->verts) uv_cut.row(v.id) = uv_ebd.row(v.half().next().crnr().id);
-    MatXd uv = seamless_slim(*hm_emb, *hm_cut, seam1, singular1, uv_cut, slim_max_iter, slim_rel_tol);
+    clock.mark(RemeshStage::slim);
+    MatXd uv = seamless_slim(*hm_emb, *hm_cut, seam1, singular1, uv_cut, slim_iter, slim_tol);
 
     // ------ qex on the slim result ------
     hm_emb->cfn = VecXc(hm_emb->nF * 3);
@@ -117,6 +123,7 @@ inline RemeshStage compute_quadrangulation_impl(
         hm_emb->cfn(i * 3 + j) = complex(uv(k, 0), uv(k, 1));
     }}
 
+    clock.mark(RemeshStage::qex);
     qex::sanitization(*hm_emb, matching1, singular1, 4);
 
     vec<qex::Qport> q_ports;
@@ -126,9 +133,22 @@ inline RemeshStage compute_quadrangulation_impl(
     qex::generate_eqvert_qport(*hm_emb, eqvs, q_ports);
     qex::generate_fqvert_qport(*hm_emb, fqvs, q_ports);
     auto q_edges = qex::generate_q_edge(*hm_emb, matching1, q_ports);
-    auto q_faces = qex::generate_q_faces(q_ports, q_edges);
-    auto [q_pos, q_idx] = extract_quad_mesh(*hm, q_faces, refine);
-    auto q_val = label_quad_patches(*tm, cmbf->singular, q_faces, q_idx);
+    int n_open = 0, n_incomplete = 0;
+    auto q_faces = qex::generate_q_faces(q_ports, q_edges, &n_open, &n_incomplete);
+    const int n_dropped = n_open + n_incomplete;
+    const double hole_ratio = n_dropped == 0 ? 0.
+                             : double(n_dropped) / double(n_dropped + static_cast<int>(q_faces.size()));
+    METRIKO_CHECK(!q_faces.empty() && hole_ratio <= 0.02,
+        "{} of {} q-face rings do not close ({} dangling q-ports, {:.2f}% of the quads lost): the uv "
+        "parametrization here has folded or collapsed triangles the extractor cannot trace through",
+        n_dropped, n_dropped + static_cast<int>(q_faces.size()), q_ports.size() - static_cast<int>(q_edges.size()) * 2,
+        100.0 * hole_ratio);
+    MatXi q_fill;
+    auto [q_pos, q_idx] = extract_quad_mesh(*hm, q_faces, refine, &q_fill);
+    // the patch labels are replayed through the quad mesh's edge graph, which needs a closed mesh: with holes
+    // there is no well-defined patch there, so label every quad with -1
+    auto q_val = n_dropped == 0 ? label_quad_patches(*tm, cmbf->singular, q_faces, q_idx)
+                                : MatXi::Constant(q_idx.rows(), 1, -1);
     q_pos *= unit;
 
     return {
@@ -142,7 +162,9 @@ inline RemeshStage compute_quadrangulation_impl(
         std::move(q_faces),
         std::move(q_pos),
         std::move(q_idx),
-        std::move(q_val)
+        std::move(q_val),
+        std::move(q_fill),
+        n_dropped
     };
 }
 
@@ -156,11 +178,18 @@ inline std::expected<RemeshResult, std::string> compute_quadrangulation(
         return RemeshResult{
             std::move(q.q_pos),
             std::move(q.q_idx),
-            std::move(q.q_val)
+            std::move(q.q_val),
+            {},
+            {},
+            s,
+            q.holes,
+            std::move(q.q_fill)
         };
     }
-    catch (const std::exception& ex) { return std::unexpected(ex.what()); }
-    catch (...)                      { return std::unexpected("unknown error"); }
+    catch (const std::exception& ex) {
+        return std::unexpected(std::string(stage_name(detail::failed_stage())) + ": " + ex.what());
+    }
+    catch (...) { return std::unexpected("unknown error"); }
 }
 }
 #endif

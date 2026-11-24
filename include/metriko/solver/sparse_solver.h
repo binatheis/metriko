@@ -10,13 +10,13 @@
 #include <random>
 #include <Eigen/Sparse>
 #include "metriko/common/typedef.h"
-#ifdef GC_HAVE_SUITESPARSE
+#ifdef METRIKO_HAVE_SUITESPARSE
 #include <Eigen/CholmodSupport>
 #endif
 
 namespace metriko {
 // CHOLMOD when SuiteSparse is available, eigen's built-in solvers otherwise
-#ifdef GC_HAVE_SUITESPARSE
+#ifdef METRIKO_HAVE_SUITESPARSE
 template <class M> using SparseLDLT = Eigen::CholmodSimplicialLDLT<M>;
 template <class M> using SparseLLT  = Eigen::CholmodSupernodalLLT<M>;
 #else
@@ -27,9 +27,21 @@ template <class M> using SparseLLT  = Eigen::SimplicialLLT<M>;
 // revealing QR stays on eigen in both configurations
 using SparseRankQR = Eigen::SparseQR<SprsD, Eigen::COLAMDOrdering<int>>;
 
+// CHOLMOD's supernodal factorization parallelizes its numeric update internally, and the floating-point order
+// (hence the last bits of the solution) then depends on the scheduling: two runs of the same mesh differ, which
+// cascades into a different quad extraction. one thread inside the factorization makes the pipeline
+// reproducible while the explicit OpenMP loops keep their parallelism.
+template <class S> inline S& deterministic(S& solver) {
+#ifdef METRIKO_HAVE_SUITESPARSE
+    solver.cholmod().nthreads_max = detail::cholmod_deterministic() ? 1 : 0; // 0: CHOLMOD's default (all threads)
+#endif
+    return solver;
+}
+
 // A is hermitian; only its lower triangle is read
 inline VecXc solve_hermitian(const SprsC& A, const VecXc& b) {
     SparseLDLT<SprsC> ldlt(A);
+    deterministic(ldlt);
     if (ldlt.info() != Eigen::Success) {
         METRIKO_FAIL("failed to factorize a hermitian system (info {}): the mesh is likely degenerate, too coarsely tessellated, or contains sharp features / bad triangles", static_cast<int>(ldlt.info()));
     }
@@ -40,6 +52,7 @@ inline VecXc solve_hermitian(const SprsC& A, const VecXc& b) {
 // quotient s = x* L x / x* M x stops changing (relative change below tol), or maxIter is reached
 inline VecXc solve_smallest_eig(const SprsC& L, const SprsC& M, const int maxIter = 500, const double tol = 1e-8) {
     SparseLDLT<SprsC> ldlt(L);
+    deterministic(ldlt);
     if (ldlt.info() != Eigen::Success) {
         METRIKO_FAIL("failed to factorize the connection Laplacian (info {}): the mesh is likely degenerate, too coarsely tessellated, or contains sharp features / bad triangles", static_cast<int>(ldlt.info()));
     }

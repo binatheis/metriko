@@ -24,18 +24,23 @@ inline void Emesh::collapse_thalf(int thid) {
     auto& te_prv = tedges[th_prv.teid];
     auto& te_nxt = tedges[th_nxt.teid];
 
-    METRIKO_CHECK(it_crr->side == it_prv->side || it_crr->side == it_nxt->side, "collapse thalf error");
-    METRIKO_CHECK(it_crr->side != it_prv->side || it_crr->side != it_nxt->side, "collapse thalf error");
-
     if      (n_adj_tqs(th_crr.id) == 2 && !is_fixed(th_crr.nid_fr())) { te_prv.insert_locs(te_crr.nids); }
     else if (n_adj_tqs(th_twn.id) == 2 && !is_fixed(th_crr.nid_to())) { te_nxt.insert_locs(te_crr.nids); }
     else {
+        if (it_crr->side == it_prv->side && it_crr->side == it_nxt->side) {
+            auto it_tc = rg::find(tq_twn.data, th_twn.id, &Edata::thid);
+            auto it_tp = circular_prev(tq_twn.data, it_tc);
+            auto it_tn = circular_next(tq_twn.data, it_tc);
+            if (it_tc->side != it_tp->side || it_tc->side != it_tn->side) { collapse_thalf(th_twn.id); return; }
+        }
+        METRIKO_CHECK(it_crr->side == it_prv->side || it_crr->side == it_nxt->side, "collapse thalf error");
+        METRIKO_CHECK(it_crr->side != it_prv->side || it_crr->side != it_nxt->side, "collapse thalf error");
         bool collapse_to_prev = it_crr->side != it_prv->side;
         if (is_fixed(collapse_to_prev ? th_crr.nid_fr() : th_crr.nid_to())) collapse_to_prev = !collapse_to_prev;
 
         // the merged tedge joins the far end of the neighbour (own) to the far end of te_crr (oth) by the shortest
         // line inside tq_crr, ordered like the neighbour
-        const Unfolded chart = unfold(*this, tq_crr.data | vw::transform(&Edata::thid) | rg::to<vec<int>>());
+        const Unfolded chart = unfold(*this, tq_crr.data | vw::transform(&Edata::thid) | rg::to<vec<int>>(), "collapse_thalf");
         auto at = [&](auto it, int nid) { return chart.at(it - tq_crr.data.begin(), nid); };
         const int own = collapse_to_prev ? at(it_prv, th_prv.nid_fr()) : at(it_nxt, th_nxt.nid_to());
         const int oth = collapse_to_prev ? at(it_crr, th_crr.nid_to()) : at(it_crr, th_crr.nid_fr());

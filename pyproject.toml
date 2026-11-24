@@ -1,0 +1,31 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind==2.12.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "metriko"
+version = "0.1.0"
+description = "Quad remeshing of closed triangle meshes"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["numpy"]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+wheel.py-api = "cp312"
+wheel.packages = ["python/metriko"]
+build-dir = "build/{wheel_tag}"
+install.components = ["python"]
+build.targets = ["_core", "metriko-cli"]
+build.verbose = false
+
+[tool.scikit-build.cmake.define]
+METRIKO_BUILD_DIST = "ON"
+METRIKO_BUILD_CLI = "ON"
+METRIKO_BUILD_PYTHON = "ON"
+METRIKO_REQUIRE_SUITESPARSE = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

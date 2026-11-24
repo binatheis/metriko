@@ -61,6 +61,7 @@ inline vec<HmFlat> flat_around(const HmFlat& c, Vert v, Face stop, bool ccw = tr
         p = g;
         if (g.face() == stop) break;
     }
+    if (stop == c.f) res.push_back(flat_across(res.back(), (ccw ? h : p).edge()));
     return res;
 }
 

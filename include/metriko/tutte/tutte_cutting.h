@@ -388,7 +388,7 @@ inline std::unique_ptr<Hmesh> compute_embedding_cut_hmesh(
     data.clear();
     for (auto& [i0, i1, d0, d1]: sgms) {
         auto it = half_by_verts.find({i0, i1});
-        METRIKO_CHECK(it != half_by_verts.end(), "no half between vertices");
+        METRIKO_CHECK(it != half_by_verts.end(), "no half between vertices {} -> {} (reversed half present: {}: the segment is not an edge of the cut mesh in that direction)", i0, i1, half_by_verts.contains({i1, i0}));
         d0.half = it->second;
         d1.half = it->second.twin();
         data.push_back(d0);

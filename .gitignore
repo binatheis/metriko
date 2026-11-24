@@ -7,6 +7,14 @@ build-cli/
 build-release/
 .idea/
 thesis/
-AGENTS.md
 imgui.ini
 .polyscope.ini
+.deps/
+dist/
+wheelhouse/
+CMakeUserPresets.json
+python/metriko/_core.pyd
+python/metriko/_core.so
+*.whl
+__pycache__/
+*.pyc

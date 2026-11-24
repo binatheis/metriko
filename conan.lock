@@ -1,0 +1,14 @@
+{
+    "version": "0.5",
+    "requires": [
+        "tsl-robin-map/1.4.0#5589ce7c75f1036d5dde91b744817cd5%1753346721.037",
+        "openblas/0.3.30#aca4131c143d4c109923372e052c643c%1755683868.451",
+        "nanobind/2.12.0#c6eddf807e29e0a1d5a1723f1f37e734%1772531639.254",
+        "cli11/2.6.0#41e625280f9c960e9970c1dc7d2c97b8%1761229555.551"
+    ],
+    "build_requires": [
+        "cmake/3.31.12#173a926abc2b77f03c826b6fd6539426%1779785723.158"
+    ],
+    "python_requires": [],
+    "config_requires": []
+}

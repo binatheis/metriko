@@ -10,9 +10,16 @@
 #include "common.h"
 
 namespace metriko::qex {
+    // walks the q-edge pairing around every q-vertex. a ring that cannot be walked entirely (a dangling q-port
+    // in the way) or whose four edges do not close on the port they started from is *dropped*, not fatal: the
+    // reference implementation (libQEx, Ebke et al. 2013, §4.6) treats exactly this case as a warning and leaves
+    // a hole, because it is a local defect of the parametrization, not a broken extractor. the caller counts the
+    // drops and decides whether they are few enough to return a mesh (lib.h)
     inline vec<Qface> generate_q_faces(
         const vec<Qport> &qps,
-        const vec<Qedge> &qes
+        const vec<Qedge> &qes,
+        int* n_open       = nullptr, // rings whose four q-edges do not close
+        int* n_incomplete = nullptr  // rings the walk could not finish (a dangling q-port)
     ) {
         vec<Qface> qfs;
         vec<Qhalf> qhs;
@@ -38,10 +45,9 @@ namespace metriko::qex {
                 visit[h] = true;
                 qp = &qhs[h].port2();
             }
-            if (qfhs.size() == 4) {
-                METRIKO_CHECK(qps[qp->prev_id].idx == qhs[i].port1().idx, "q-face ring does not close");
-                qfs.emplace_back(qfhs);
-            }
+            if (qfhs.size() != 4) { if (n_incomplete) ++*n_incomplete; continue; }
+            if (qps[qp->prev_id].idx != qhs[i].port1().idx) { if (n_open) ++*n_open; continue; }
+            qfs.emplace_back(qfhs);
         }
         return qfs;
     }

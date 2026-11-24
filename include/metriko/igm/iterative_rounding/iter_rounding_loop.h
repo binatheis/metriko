@@ -32,6 +32,8 @@ public:
     static bool post_iteration(const VecXd &x) { return false; }
 
     bool initFixedIndices() {
+        const auto t_init = std::chrono::steady_clock::now();
+        ++rounding_steps();
         xPrev = xCurr;
         VecXd X = UFull * xCurr;
         double minDif = 3276700.0;
@@ -52,12 +54,14 @@ public:
             roundedSingulars = true;
         }
 
-        //Poisson error
-        gInteg = X2F * wInteg;
-
-        //Closeness
-        igl::speye(xCurr.size(), gClose);
-        gClose = gClose * wClose;
+        // Poisson error and closeness: both blocks are constant (X2F and wClose never change for the
+        // instance), so build them once instead of on every rounding step (one step per rounded coordinate)
+        if (gInteg.rows() != X2F.rows() || gInteg.cols() != X2F.cols()) gInteg = X2F * wInteg;
+        if (gClose.rows() != xCurr.size()) {
+            igl::speye(xCurr.size(), gClose);
+            gClose = gClose * wClose;
+        }
+        rounding_init_secs() += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_init).count();
 
         //fixedIndices constantness
         gConst.resize(fixedIdcs.size(), X.size());

@@ -98,6 +98,37 @@ inline std::optional<Edge> try_get_edge(const Hmesh& hm, const HmLoc& a, const H
     return std::nullopt;
 }
 
+// for a directed boundary segment a -> b of a CCW region loop, pick the face on its left when a and b share an edge
+inline std::optional<Face> try_get_left_face(const Hmesh& hm, const HmLoc& a, const HmLoc& b) {
+    auto fa = get_ptloc_faces(hm, a);
+    auto fb = get_ptloc_faces(hm, b);
+    vec<Face> common;
+    for (int x : fa)
+    for (int y : fb)
+        if (x == y && !rg::contains(common, hm.faces[x])) common.push_back(hm.faces[x]);
+    if (common.empty()) return std::nullopt;
+    if (common.size() == 1) return common[0];
+    if (auto eo = try_get_edge(hm, a, b)) {
+        const Edge e = *eo;
+        const Half h = e.half();
+        auto pos_on_h = [&](const HmLoc& loc) -> double {
+            return std::visit(overloaded{
+                [&](const HmLocOnV& v) -> double { return v.id == h.tail().id ? 0. : v.id == h.head().id ? 1. : -1.; },
+                [&](const HmLocOnE& l) -> double { return l.id == e.id ? (h.isCanonical() ? l.r : 1. - l.r) : -1.; },
+                [&](const HmLocOnH& l) -> double { return l.id == h.id ? l.r : l.id == h.twin().id ? 1. - l.r : -1.; },
+                [&](const HmLocOnC& c) -> double { int vid = hm.crnrs[c.id].vert().id; return vid == h.tail().id ? 0. : vid == h.head().id ? 1. : -1.; },
+                [&](const auto&)       -> double { return -1.; },
+            }, loc);
+        };
+        double pa = pos_on_h(a), pb = pos_on_h(b);
+        if (pa >= 0. && pb >= 0. && pb != pa) {
+            Face f = pb > pa ? h.face() : h.twin().face();
+            if (f.id != -1) return f;
+        }
+    }
+    return common[0];
+}
+
 inline std::optional<std::pair<Half, double>> try_get_half_ratio(const Hmesh& hm, const HmLoc& loc) {
     using R = std::optional<std::pair<Half, double>>;
     return std::visit(overloaded{

@@ -156,8 +156,10 @@ namespace metriko::qex {
             }
         }
 
-        for (const Qport& p: qports)
-            if (!p.isConnected) std::println("[qedge] unpaired port {} (vid {}, eid {}, fid {})", p.idx, p.vid, p.eid, p.fid);
+        int n_unpaired = 0;
+        for (const Qport& p: qports) if (!p.isConnected) ++n_unpaired;
+        if (n_unpaired > 0) // one line: the per-port dump is only useful while debugging the tracer
+            std::println("[qedge] {} of {} q-ports were not paired (a q-edge ran into a degenerate uv triangle or left a chart)", n_unpaired, qports.size());
 
         return qedges;
     }

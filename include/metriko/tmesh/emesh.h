@@ -230,6 +230,7 @@ struct Emesh {
 
     void collapse_thalf(int thid);
     bool collapse_tquad_prepare(int tqid, Tqaux& aux) const;
+    bool collapse_tquad_prepare_impl(int tqid, Tqaux& aux, bool keep_zero_ends) const;
     void collapse_tquad_execute(Tqaux& aux);
 
     vec<int> add_new_path(const vec<HmLoc>& path, int nid0, int nid1) {

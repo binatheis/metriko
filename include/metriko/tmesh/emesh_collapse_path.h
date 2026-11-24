@@ -26,7 +26,7 @@ struct Unfolded {
     complex uv(const Emesh& tm, int i) const { return flat_uv(faces[i], tm.tnodes[nids[i]]); }
 };
 
-inline Unfolded unfold(const Emesh& tm, const vec<int>& thids) {
+inline Unfolded unfold(const Emesh& tm, const vec<int>& thids, const char* where = "") {
     const Hmesh& hm = tm.hm;
     Unfolded c;
 
@@ -43,8 +43,17 @@ inline Unfolded unfold(const Emesh& tm, const vec<int>& thids) {
     for (int k = 0; k < n; ++k) {
         auto& a = tm.tnodes[c.nids[k]];
         auto& b = tm.tnodes[c.nids[c.next(k)]];
-        auto  f = try_get_face(hm, a, b);
-        METRIKO_CHECK(f, "boundary segment {} -> {} lies in no face", loc_str(a), loc_str(b));
+        auto  f = try_get_left_face(hm, a, b);
+        if (!f) {
+            // a snapped t-edge can join two locations that share no face (a chord through a fan, or a node
+            // sitting inside a face that does not carry the other endpoint): take a face of one endpoint that
+            // contains the other one in its closure before giving up
+            for (int fid: get_ptloc_faces(hm, a)) if (fid != -1 && is_in_face(hm.faces[fid], b)) { f = hm.faces[fid]; break; }
+            for (int fid: get_ptloc_faces(hm, b)) if (!f && fid != -1 && is_in_face(hm.faces[fid], a)) { f = hm.faces[fid]; break; }
+        }
+        METRIKO_CHECK(f, "boundary segment {} -> {} lies in no face (its endpoints share no face: {} faces on the "
+                         "first, {} on the second; called from {})", loc_str(a), loc_str(b),
+                      get_ptloc_faces(hm, a).size(), get_ptloc_faces(hm, b).size(), where);
         c.faces.push_back(flat_own(*f));
     }
 
@@ -52,7 +61,18 @@ inline Unfolded unfold(const Emesh& tm, const vec<int>& thids) {
         auto& q = c.faces[k - 1];
         auto& p = c.faces[k];
         auto& l = tm.tnodes[c.nids[k]];
-        if (p.f == q.f)                               p = q;
+        if (p.f == q.f) {
+            if (auto* v = std::get_if<HmLocOnV>(&l)) {
+                const complex d0 = flat_uv(q, l) - flat_uv(q, tm.tnodes[c.nids[k - 1]]);
+                const complex d1 = flat_uv(q, tm.tnodes[c.nids[c.next(k)]]) - flat_uv(q, l);
+                const double  sc = std::abs(d0) * std::abs(d1);
+                if (cross(d0, d1) < -EPS * sc || (std::abs(cross(d0, d1)) <= EPS * sc && dot(d0, d1) < 0)) {
+                    p = flat_around(q, hm.verts[v->id], q.f, false).back();
+                    continue;
+                }
+            }
+            p = q;
+        }
         else if (auto* v = std::get_if<HmLocOnV>(&l)) p = flat_around(q, hm.verts[v->id], p.f, false).back();
         else                                          p = flat_across(q, try_get_edge(hm, l, l).value());
     }

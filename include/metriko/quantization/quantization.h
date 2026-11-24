@@ -7,6 +7,7 @@
 //
 #ifndef METRIKO_QUANTIZATION_H
 #define METRIKO_QUANTIZATION_H
+#include "metriko/api.h"
 #include "quantization_basisloop.h"
 #include "quantization_weight.h"
 #include "quantization_constraint.h"
@@ -44,31 +45,35 @@ namespace metriko {
         return arcs;
     }
 
-    // pricing: find one negative-cost cycle in the strip graph (bellman-ford
-    // with a virtual super source), or return empty when none exists. cycle
-    // cost = sum of w[teid] over its nodes, i.e. the exact energy change of
-    // applying +-1 along the loop (up to tedges hit twice, re-checked by the
-    // caller).
+    // pricing: find one negative-cost cycle in the strip graph, or return empty when none exists. cycle
+    // cost = sum of w[teid] over its nodes, i.e. the exact energy change of applying +-1 along the loop (up to
+    // tedges hit twice, re-checked by the caller).
+    // SPFA (bellman-ford driven by a work queue) instead of n full passes: only the nodes whose label changed are
+    // relaxed. the decision (a negative cycle exists or not) is the same, and the cost per call drops from
+    // O(V * E) to about O(E) in practice, which is what makes the pricing affordable on meshes where the
+    // quantization drives hundreds of t-edges to zero.
     inline vec<int> find_negative_cycle(
         const int n_thalfs,
         const vec<StripArc>& arcs,
         const VecXd& w
     ) {
-        vec dist(n_thalfs, 0.);
-        vec pred(n_thalfs, -1);
-        vec mark(n_thalfs, 0);
+        vec<vec<std::pair<int, int>>> out(n_thalfs); // source thalf -> (target thalf, tedge)
+        for (const auto& a: arcs) out[a.fr].emplace_back(a.to, a.teid);
 
-        // any cycle of the predecessor graph is a negative cycle (every
-        // relaxation strictly decreased a label), so a walk along pred that
-        // returns to a node of the same walk yields one without waiting for
-        // the n passes of bellman-ford to finish.
+        vec<double> dist(n_thalfs, 0.);  // a virtual super source into every node
+        vec<int>    pred(n_thalfs, -1);
+        vec<char>   inq(n_thalfs, 0);
+        vec<int>    cnt(n_thalfs, 0);
+        vec<int>    mark(n_thalfs, 0);
+
+        // any cycle of the predecessor graph is a negative cycle (every relaxation strictly decreased a label)
         auto cycle_in_pred = [&]() -> vec<int> {
             rg::fill(mark, 0);
             for (int s = 0; s < n_thalfs; ++s) {
                 if (mark[s] != 0) continue;
                 int x = s;
                 while (x != -1 && mark[x] == 0) { mark[x] = s + 1; x = pred[x]; }
-                if (x == -1 || mark[x] != s + 1) continue; // ended at a root or in an older walk
+                if (x == -1 || mark[x] != s + 1) continue;
                 vec cyc = {x};
                 for (int v = pred[x]; v != x; v = pred[v]) cyc.push_back(v);
                 return cyc;
@@ -76,21 +81,26 @@ namespace metriko {
             return {};
         };
 
-        constexpr int check_every = 8;
-        for (int it = 0; it < n_thalfs; ++it) {
-            bool relaxed = false;
-            for (const auto& [fr, to, teid]: arcs) {
-                if (dist[fr] + w[teid] < dist[to] - 1e-12) {
-                    dist[to] = dist[fr] + w[teid];
-                    pred[to] = fr;
-                    relaxed = true;
+        std::deque<int> q;
+        for (int i = 0; i < n_thalfs; ++i) { q.push_back(i); inq[i] = 1; }
+        while (!q.empty()) {
+            const int    u  = q.front();
+            const double du = dist[u];
+            q.pop_front();
+            inq[u] = 0;
+            for (const auto& [v, teid]: out[u]) {
+                if (du + w[teid] < dist[v] - 1e-12) {
+                    dist[v] = du + w[teid];
+                    pred[v] = u;
+                    if (!inq[v]) {
+                        q.push_back(v);
+                        inq[v] = 1;
+                        if (++cnt[v] > n_thalfs) return cycle_in_pred(); // relaxed too often: a cycle must exist
+                    }
                 }
             }
-            if (!relaxed) return {}; // converged: no negative cycle
-            if (it % check_every == check_every - 1)
-                if (auto cyc = cycle_in_pred(); !cyc.empty()) return cyc;
         }
-        return cycle_in_pred(); // still relaxing after n passes: the pred graph must contain a cycle
+        return {};
     }
 
     inline VecXd compute_quantization(const Emesh& tm, const Mgrph& mg) {
@@ -143,6 +153,7 @@ namespace metriko {
         bool improved = true;
         for (int guard = 0; improved && guard < 100 * nte; ++guard) {
             improved = false;
+            if (detail::stage_overrun()) throw StageTimeout(RemeshStage::quantization, "the quantization pricing ran past the stage timeout");
             for (int sgn: {+1, -1}) {
                 // marginal cost of changing tedge j by sgn:
                 // ((X_j+sgn)/R_j - 1)^2 - (X_j/R_j - 1)^2

@@ -29,7 +29,13 @@
 #include <Eigen/Geometry>
 #include <Eigen/Sparse>
 
-#define METRIKO_FAIL(...) throw std::runtime_error(std::format(__VA_ARGS__))
+// METRIKO_DIAG_LOC prefixes every failure with its file:line, for diagnosing which stage threw
+#ifdef METRIKO_DIAG_LOC
+#define METRIKO_WHERE std::string(std::string(__FILE__).substr(std::string(__FILE__).find_last_of("/\\") + 1) + ":" + std::to_string(__LINE__) + ": ")
+#else
+#define METRIKO_WHERE std::string()
+#endif
+#define METRIKO_FAIL(...) throw std::runtime_error(METRIKO_WHERE + std::format(__VA_ARGS__))
 #define METRIKO_CHECK(cond, ...) do { if (!(cond)) { __VA_OPT__(METRIKO_FAIL(__VA_ARGS__);) METRIKO_FAIL("{}", #cond); } } while (0)
 
 namespace metriko {

@@ -11,6 +11,9 @@
 #include "metriko/tmesh/emesh.h"
 
 namespace metriko {
+// the zero-width t-edges must not form a path between two fixed junction nodes (a loop would collapse onto
+// nothing). only the nodes a zero-width tedge touches are considered: the check runs once per step of the
+// pricing loop, so it has to be O(#zero tedges), not O(#nodes)
 inline bool compute_validation(
     const Mgrph &mg,
     const Emesh &tm,
@@ -18,37 +21,41 @@ inline bool compute_validation(
 ) {
     if ((X.array() < 0).any()) return false;
 
-    vec<vec<int>> adjs(mg.mnodes.size());
-    for (const auto& [teid, nids] : tm.live_tedges())
-        if (X[teid] == 0) {
-            adjs[nids.front()].push_back(nids.back());
-            adjs[nids.back()].push_back(nids.front());
-        }
-
-    vec visited(mg.mnodes.size(), false);
-
-    for (int i = 0; i < mg.mnodes.size(); ++i) {
-        if (mg.mnodes[i].jt != JunctionType::F || visited[i]) continue;
-
-        int start_nid = i;
-        std::queue<int> q;
-        q.push(start_nid);
-        visited[start_nid] = true;
-
-        while (!q.empty()) {
-            int curr_nid = q.front();
-            q.pop();
-
-            if (curr_nid != start_nid && mg.mnodes[curr_nid].jt == JunctionType::F) return false;
-
-            for (int next_nid : adjs[curr_nid])
-                if (!visited[next_nid]) {
-                    visited[next_nid] = true;
-                    q.push(next_nid);
-                }
-        }
+    umap<int, int> idx;   // tnode -> compact index
+    vec<int>       nids;  // compact index -> tnode
+    vec<vec<int>>  adjs;
+    auto intern = [&](int nid) {
+        auto it = idx.find(nid);
+        if (it != idx.end()) return it->second;
+        const int i = static_cast<int>(nids.size());
+        idx.emplace(nid, i);
+        nids.push_back(nid);
+        adjs.emplace_back();
+        return i;
+    };
+    for (const auto& [teid, ns]: tm.live_tedges()) {
+        if (X[teid] != 0) continue;
+        const int a = intern(ns.front());
+        const int b = intern(ns.back());
+        adjs[a].push_back(b);
+        adjs[b].push_back(a);
     }
 
+    vec<char> visited(adjs.size(), 0);
+    for (int s = 0; s < static_cast<int>(adjs.size()); ++s) {
+        if (visited[s]) continue;
+        int n_fixed = 0;
+        std::queue<int> q;
+        q.push(s);
+        visited[s] = 1;
+        while (!q.empty()) {
+            const int c = q.front();
+            q.pop();
+            if (mg.mnodes[nids[c]].jt == JunctionType::F) ++n_fixed;
+            for (int n: adjs[c]) if (!visited[n]) { visited[n] = 1; q.push(n); }
+        }
+        if (n_fixed > 1) return false;
+    }
     return true;
 }
 }

@@ -1,0 +1,308 @@
+name: build
+
+# One job per platform. Each job compiles the project exactly ONCE
+# (`uv build` -> scikit-build-core -> CMake), which produces the Python
+# extension and the `metriko-cli` executable in the same build tree; the CLI
+# is then installed from that tree with `cmake --install --component cli`.
+# Both artefacts are repaired, tested and uploaded from the same job.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+# A new push to the same branch cancels the previous run (cheap on the runners).
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Ninja is used by scikit-build-core on every platform; 4 keeps the memory
+  # footprint of the SuiteSparse build inside the 7 GB of the runners.
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  CMAKE_GENERATOR: Ninja
+  OMP_NUM_THREADS: 4
+  # Keep uv from hard-linking files across the workspace/venv boundary
+  # (cache paths differ per platform).
+  UV_LINK_MODE: copy
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # A cold SuiteSparse build is ~25-40 min; the caches bring it to 5-10.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            profile: linux-gcc
+            suitesparse: suitesparse-linux-x86_64
+            wheel_tag: cp312-abi3-linux_x86_64
+            cli_name: metriko-cli
+            cli_archive: metriko-cli-linux-x86_64.tar.gz
+            python: /opt/python/cp312-cp312/bin/python3.12
+            python313: /opt/python/cp313-cp313/bin/python3.13
+            repair: auditwheel
+          - name: windows-x86_64
+            os: windows-2022
+            container: ""
+            profile: windows-msvc
+            suitesparse: suitesparse-windows-x86_64
+            wheel_tag: cp312-abi3-win_amd64
+            cli_name: metriko-cli.exe
+            cli_archive: metriko-cli-windows-x86_64.zip
+            python: python
+            python313: ""
+            repair: delvewheel
+          - name: macos-arm64
+            os: macos-15
+            container: ""
+            profile: macos-armv8
+            suitesparse: suitesparse-macos-arm64
+            wheel_tag: cp312-abi3-macosx_11_0_arm64
+            cli_name: metriko-cli
+            cli_archive: metriko-cli-macos-arm64.tar.gz
+            python: python
+            python313: ""
+            repair: delocate
+
+    container: ${{ matrix.container }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      # ---------------------------------------------------------------- python
+      # The abi3 wheel is built with 3.12 (an abi3 build must not use a newer
+      # interpreter than the tag it claims); 3.13 is only used to *test* it.
+      - uses: actions/setup-python@v5
+        id: py312
+        if: matrix.container == ''
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-python@v5
+        id: py313
+        if: matrix.container == ''
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # ---------------------------------------------------------------- caches
+      # 1) compiler cache: the C++ objects of SuiteSparse + pmp + the pipeline
+      #    are the bulk of a cold build.
+      # Ninja needs the MSVC environment (the runners do not pre-load vcvars).
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}-v1
+          max-size: 1G
+
+      # 2) the compiled SuiteSparse install: keyed by the submodule SHA and the
+      #    build script, so it only changes when either changes.
+      - name: Record dependency SHAs (cache keys)
+        shell: bash
+        run: git submodule status deps/SuiteSparse deps/pmp-library > deps-sha.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: ${{ matrix.name }}-deps-${{ hashFiles('deps-sha.txt', 'tools/build_suitesparse.py', 'conanfile.py') }}
+          restore-keys: ${{ matrix.name }}-deps-
+
+      # 3) conan packages (nanobind, CLI11, OpenBLAS).
+      - uses: conan-io/setup-conan@ed3942a6883243f4af84e13e49c972f9440fa1c2 # v1.4.0
+        with:
+          cache_packages: true
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: ${{ matrix.name }}-conan-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/*') }}
+          restore-keys: ${{ matrix.name }}-conan-
+
+      # ------------------------------------------------------------- toolchain
+      - name: Build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          BP="${{ steps.py312.outputs.python-path }}"
+          P13="${{ steps.py313.outputs.python-path }}"
+          [ -z "$BP" ] && BP="${{ matrix.python }}"
+          [ -z "$P13" ] && P13="${{ matrix.python313 }}"
+          echo "BUILD_PY=$BP" >> "$GITHUB_ENV"
+          echo "PY313=$P13" >> "$GITHUB_ENV"
+          "$BP" -m pip install --upgrade pip
+          "$BP" -m pip install \
+            "scikit-build-core>=0.10" "nanobind==2.12.0" uv \
+            cmake ninja "${{ matrix.repair }}" pytest numpy
+
+      - name: Conan profile
+        shell: bash
+        run: conan profile detect --force
+
+      - name: Conan install
+        shell: bash
+        run: |
+          conan install . -of build/conan \
+            --profile:host conan/profiles/${{ matrix.profile }} \
+            --profile:build conan/profiles/${{ matrix.profile }} \
+            -s build_type=Release --build=missing
+
+      - name: Build SuiteSparse (cached in .deps)
+        shell: bash
+        run: |
+          "${{ matrix.python }}" tools/build_suitesparse.py --jobs 4 --conan-dir build/conan
+
+      # ---------------------------------------------------------------- build
+      # ONE compilation. `build.targets` in pyproject.toml already contains
+      # `_core` and `metriko-cli`, so the wheel build compiles the CLI too.
+      - name: Build wheel + CLI (single CMake build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same recipe as the local build wrapper (build/uvbuild.bat):
+          # scikit-build-core forwards CMAKE_ARGS to CMake (space separated, no
+          # quoting), CMAKE_GENERATOR comes from the workflow env, and --python
+          # pins the build interpreter. Forward slashes keep CMake happy on
+          # Windows.
+          WS="${{ github.workspace }}"
+          WS="${WS//\\//}"
+          export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
+          echo "CMAKE_ARGS=$CMAKE_ARGS"
+          uv build --wheel --no-build-isolation --python "$BUILD_PY" -o wheelhouse/raw
+
+      # scikit-build-core names the tree build/{wheel_tag}; resolve it instead of
+      # hardcoding the tag (macOS includes the deployment target in the tag).
+      - name: Resolve build tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$(ls -d build/cp312-abi3-* | head -n 1)"
+          echo "build tree: $DIR"
+          echo "BUILD_DIR=$DIR" >> "$GITHUB_ENV"
+
+      - name: Install CLI (same build tree, no recompilation)
+        shell: bash
+        run: cmake --install "$BUILD_DIR" --component cli --prefix dist/cli
+
+      # ---------------------------------------------------------------- repair
+      - name: Repair wheel (Linux)
+        if: matrix.repair == 'auditwheel'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Conan's OpenBLAS is static, but the OpenMP runtime is not: expose
+          # the conan lib dirs so auditwheel can resolve DT_NEEDED.
+          LIBDIRS=$(find "$HOME/.conan2/p" -name '*.so*' -exec dirname {} + 2>/dev/null | sort -u | tr '\n' ':')
+          LD_LIBRARY_PATH="${LIBDIRS}${LD_LIBRARY_PATH:-}" \
+            auditwheel repair wheelhouse/raw/metriko-*.whl -w wheelhouse
+          rm -f wheelhouse/raw/*.whl
+
+      - name: Repair wheel (Windows)
+        if: matrix.repair == 'delvewheel'
+        shell: pwsh
+        run: |
+          delvewheel repair (Get-Item wheelhouse/raw/*.whl).FullName -w wheelhouse
+          Remove-Item wheelhouse/raw/*.whl
+
+      - name: Repair wheel (macOS)
+        if: matrix.repair == 'delocate'
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIBDIRS=$(find "$HOME/.conan2/p" -name '*.dylib' -exec dirname {} + 2>/dev/null | sort -u | tr '\n' ':')
+          DYLD_FALLBACK_LIBRARY_PATH="${LIBDIRS}${DYLD_FALLBACK_LIBRARY_PATH:-}" \
+            delocate-wheel -w wheelhouse wheelhouse/raw/metriko-*.whl
+          rm -f wheelhouse/raw/*.whl
+
+      # ----------------------------------------------------------------- tests
+      # The CLI is the same binary the wheel contains, installed separately.
+      - name: CLI smoke test (fertility, scale 0.01)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p smoke
+          "dist/cli/bin/${{ matrix.cli_name }}" --help > smoke/help.txt
+          "dist/cli/bin/${{ matrix.cli_name }}" \
+            -i example/models/fertility.obj -o smoke/fertility.obj --scale 0.01 --timings
+          test -s smoke/fertility.obj
+
+      - name: Test wheel on Python 3.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUILD_PY" -m venv .venv312
+          if [ -x .venv312/bin/python ]; then PY=.venv312/bin/python; else PY=.venv312/Scripts/python.exe; fi
+          "$PY" -m pip install --upgrade pip pytest numpy
+          "$PY" -m pip install wheelhouse/metriko-*.whl
+          "$PY" -m pytest tests/python -v
+
+      - name: Test wheel on Python 3.13 (abi3)
+        if: env.PY313 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$PY313" -m venv .venv313
+          if [ -x .venv313/bin/python ]; then PY=.venv313/bin/python; else PY=.venv313/Scripts/python.exe; fi
+          "$PY" -m pip install --upgrade pip pytest numpy
+          "$PY" -m pip install wheelhouse/metriko-*.whl
+          "$PY" -m pytest tests/python -v
+
+      # --------------------------------------------------------------- package
+      - name: Package CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/cli/bin/${{ matrix.cli_name }}" -DestinationPath "${{ matrix.cli_archive }}"
+          Get-Item "${{ matrix.cli_archive }}" | Select-Object Name, Length
+
+      - name: Package CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf "${{ matrix.cli_archive }}" -C dist/cli/bin "${{ matrix.cli_name }}"
+          ls -lh "${{ matrix.cli_archive }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metriko-wheel-${{ matrix.name }}
+          path: wheelhouse/metriko-*.whl
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metriko-cli-${{ matrix.name }}
+          path: ${{ matrix.cli_archive }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.name }}
+          path: |
+            smoke/
+            ${{ env.BUILD_DIR }}/CMakeCache.txt
+          if-no-files-found: ignore

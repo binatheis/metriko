@@ -85,6 +85,11 @@ inline minmax_int get_minmax_int(vec<complex> uvs) {
     };
 };
 
+// barycentric coordinates of tgt in the triangle (ori, pt1, pt2), as (weight of pt1, weight of pt2).
+// a parametrized triangle degenerated to a line has no inverse: QEx admits such input (the sanitization may
+// collapse a sliver, and the seam may fold a triangle onto an iso-line), so fall back to the minimum-norm
+// solution, i.e. the orthogonal projection of tgt onto that line. it stays exact for every target on the line,
+// which is where a traced iso-line meets such a triangle.
 inline complex calc_coefficient(
     const complex ori,
     const complex pt1,
@@ -95,8 +100,10 @@ inline complex calc_coefficient(
     auto v2  = pt2 - ori;
     auto dif = tgt - ori;
     auto det = cross(v1, v2);
-    METRIKO_CHECK(det != 0, "degenerate uv triangle");
-    return {cross(dif, v2) / det, cross(v1, dif) / det};
+    if (det != 0) return {cross(dif, v2) / det, cross(v1, dif) / det};
+    const double n1 = std::norm(v1), n2 = std::norm(v2);
+    if (n1 + n2 == 0) return {0., 0.}; // degenerate to a point: any target maps to the point
+    return {dot(v1, dif) / (n1 + n2), dot(v2, dif) / (n1 + n2)};
 }
 
 // Find the intersection of a line passing through a and b and another line passing through c and d.

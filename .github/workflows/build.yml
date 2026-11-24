@@ -66,8 +66,10 @@ jobs:
             python: python
             python313: ""
             repair: delvewheel
+          # macos-14/15 are the arm64 images (the intel ones are retired per
+          # actions/runner-images); the account is on a plan that serves them.
           - name: macos-arm64
-            os: macos-14
+            os: macos-15
             container: ""
             profile: macos-armv8
             suitesparse: suitesparse-macos-arm64
@@ -214,6 +216,7 @@ jobs:
           WS="${{ github.workspace }}"
           WS="${WS//\\//}"
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
+
           echo "CMAKE_ARGS=$CMAKE_ARGS"
           uv build --wheel --no-build-isolation --python "$BUILD_PY" -o wheelhouse/raw
 

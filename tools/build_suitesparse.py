@@ -130,6 +130,11 @@ def main() -> int:
         if not blas_lib.is_file():
             raise SystemExit(f"BLAS library not found: {blas_lib}")
         cmake_lib = blas_lib.as_posix()
+        if blas_lib.suffix == ".a" and sys.platform.startswith("linux"):
+            # a *static* OpenBLAS on Linux leaves its Fortran/pthread/dl runtime to the final link, and
+            # SuiteSparse probes the BLAS by compiling a small program: list those libraries explicitly or the
+            # probe fails with "BLAS: OpenBLAS failed to compile (v0.2.14 or later is required)"
+            cmake_lib = f"{cmake_lib};m;pthread;dl;gfortran"
         defines["BLA_VENDOR"] = "OpenBLAS"
         defines["SUITESPARSE_C_TO_FORTRAN"] = "(name,NAME) name##_"
         defines["BLAS_LIBRARIES"] = cmake_lib
@@ -141,7 +146,7 @@ def main() -> int:
     stamp = {
         "sha": submodule_sha(),
         "defines": defines,
-        "blas_size": Path(defines["BLAS_LIBRARIES"]).stat().st_size if "BLAS_LIBRARIES" in defines else 0,
+        "blas_size": Path(defines["BLAS_LIBRARIES"].split(";")[0]).stat().st_size if "BLAS_LIBRARIES" in defines else 0,
     }
     stamp["hash"] = hashlib.sha256(json.dumps(stamp, sort_keys=True).encode()).hexdigest()
     stamp_file = prefix / STAMP_NAME

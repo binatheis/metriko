@@ -232,15 +232,14 @@ jobs:
             WS="${WS//\\//}"
           fi
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
-          # macOS: Apple clang has no -fopenmp; the CMakeLists links libomp by absolute path when find_library
-          # finds it, so point CMAKE_PREFIX_PATH at the conan *package* folder (not the build folder) that
-          # contains lib/libomp.a. CMAKE_PREFIX_PATH is a list, so ';' is the right separator here.
+          # macOS: Apple clang has no -fopenmp and FindOpenMP finds the flags but not the runtime. Pass the
+          # absolute libomp from conan's llvm-openmp (only the *package* folder: ~/.conan2/p/<hash>/p, not the
+          # build folder) through our own cache variable, which no toolchain overwrites.
           if [ "$RUNNER_OS" = "macOS" ]; then
             OMP_LIB=$(find "$HOME/.conan2" -path '*/p/lib/libomp.*' -print -quit 2>/dev/null || true)
             echo "libomp: ${OMP_LIB:-<not found>}"
             if [ -n "$OMP_LIB" ]; then
-              OMP_PKG=$(cd "$(dirname "$OMP_LIB")/.." && pwd)
-              CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }};$OMP_PKG"
+              CMAKE_ARGS="$CMAKE_ARGS -DMETRIKO_OPENMP_LIBRARY=$OMP_LIB"
             fi
           fi
 

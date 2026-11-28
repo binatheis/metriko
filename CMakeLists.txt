@@ -86,15 +86,17 @@ if (ENABLE_OPENMP OR METRIKO_BUILD_DIST)
         set(METRIKO_HAVE_OPENMP TRUE)
         message(STATUS "OpenMP found. CXX flags: ${OpenMP_CXX_FLAGS}")
         # Apple clang: FindOpenMP finds the flags (-Xclang -fopenmp) but not the runtime library, and linking
-        # without it leaves __kmpc_* undefined in the extension module and the CLI. conan's llvm-openmp puts
-        # libomp under CMAKE_PREFIX_PATH, so look for it and link it explicitly.
-        if (APPLE)
+        # without it leaves __kmpc_* undefined in the extension module and the CLI. The caller may pass the
+        # absolute path (conan's llvm-openmp, e.g. -DMETRIKO_OPENMP_LIBRARY=.../lib/libomp.a); otherwise look for
+        # it on the usual search paths. find_library alone is not enough: a conan toolchain overwrites
+        # CMAKE_PREFIX_PATH, so the package folder is not on the search path.
+        if (APPLE AND NOT METRIKO_OPENMP_LIBRARY)
             find_library(METRIKO_OPENMP_LIBRARY omp)
-            if (METRIKO_OPENMP_LIBRARY)
-                message(STATUS "OpenMP runtime: ${METRIKO_OPENMP_LIBRARY}")
-            else()
-                message(WARNING "OpenMP flags found but no libomp: the link will fail on __kmpc_* symbols")
-            endif()
+        endif()
+        if (APPLE AND METRIKO_OPENMP_LIBRARY)
+            message(STATUS "OpenMP runtime: ${METRIKO_OPENMP_LIBRARY}")
+        elseif (APPLE)
+            message(WARNING "OpenMP flags found but no libomp: the link will fail on __kmpc_* symbols")
         endif()
     else()
         message(WARNING "OpenMP not found, building without OpenMP support.")

@@ -231,12 +231,16 @@ jobs:
             WS="${WS//\\//}"
           fi
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
-          # Apple clang has no -fopenmp: conan's llvm-openmp provides libomp, but FindOpenMP only picks it up
-          # when told where the library is (otherwise the module compiles with -fopenmp and fails to link)
+          # Apple clang has no -fopenmp: conan's llvm-openmp provides libomp, and FindOpenMP finds the flags but
+          # NOT the library, so the module links without the runtime (__kmpc_* undefined). Read the package folder
+          # from conan's CMakeDeps file and add the library to the module and executable link lines. The ';' list
+          # separator keeps it a single argument (CMAKE_ARGS is split on whitespace).
           if [ "$RUNNER_OS" = "macOS" ]; then
-            OMP_LIB=$(find "$HOME/.conan2" -name 'libomp.dylib' -print -quit 2>/dev/null || true)
-            if [ -n "$OMP_LIB" ]; then
-              CMAKE_ARGS="$CMAKE_ARGS -DOpenMP_omp_LIBRARY=$OMP_LIB -DOpenMP_CXX_LIB_NAMES=omp -DOpenMP_C_LIB_NAMES=omp"
+            OMP_DATA=$(ls "$PWD"/build/conan/*llvm-openmp*-data.cmake 2>/dev/null | head -n 1 || true)
+            OMP_PKG=$(sed -n 's/.*PACKAGE_FOLDER[^"]*"\([^"]*\)".*/\1/p' "$OMP_DATA" 2>/dev/null | head -n 1 || true)
+            echo "llvm-openmp prefix: ${OMP_PKG:-<not found>}"
+            if [ -n "$OMP_PKG" ]; then
+              CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_MODULE_LINKER_FLAGS=-L$OMP_PKG/lib;-lomp -DCMAKE_EXE_LINKER_FLAGS=-L$OMP_PKG/lib;-lomp"
             fi
           fi
 

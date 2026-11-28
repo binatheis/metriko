@@ -119,6 +119,10 @@ def main() -> int:
     }
     if is_macos:
         defines["BLA_VENDOR"] = "Apple"
+        # Apple clang has no built-in OpenMP and SuiteSparse's find_package(OpenMP) does not look into the
+        # conan llvm-openmp package; CHOLMOD only uses OpenMP for its own internal parallelism (metriko pins its
+        # factorizations to one thread anyway), so build it without OpenMP on macOS.
+        defines["SUITESPARSE_USE_OPENMP"] = "OFF"
     else:
         blas_lib, blas_inc = args.blas_lib, args.blas_include
         if blas_lib is None:

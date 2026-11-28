@@ -18,3 +18,4 @@ python/metriko/_core.so
 *.whl
 __pycache__/
 *.pyc
+conan.lock

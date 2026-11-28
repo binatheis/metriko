@@ -182,7 +182,11 @@ jobs:
       - name: Conan install
         shell: bash
         run: |
-          conan install . -of build/conan \
+          # No lockfile is committed: it is platform-dependent (macOS needs
+          # llvm-openmp, Windows/Linux need openblas). The exact versions are
+          # pinned in conanfile.py; --lockfile-partial keeps a stale local
+          # conan.lock from failing the resolve.
+          conan install . -of build/conan --lockfile-partial \
             --profile:host conan/profiles/${{ matrix.profile }} \
             --profile:build conan/profiles/${{ matrix.profile }} \
             -s build_type=Release --build=missing
@@ -213,8 +217,15 @@ jobs:
           # quoting), CMAKE_GENERATOR comes from the workflow env, and --python
           # pins the build interpreter. Forward slashes keep CMake happy on
           # Windows.
-          WS="${{ github.workspace }}"
-          WS="${WS//\\//}"
+          # github.workspace is the *host* path: inside the manylinux container the
+          # checkout lives at /__w/<repo>/<repo>, so ask the shell there. On Windows
+          # the path must use forward slashes for CMake.
+          if [ -n "${{ matrix.container }}" ]; then
+            WS="$(pwd)"
+          else
+            WS="${{ github.workspace }}"
+            WS="${WS//\\//}"
+          fi
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
 
           echo "CMAKE_ARGS=$CMAKE_ARGS"

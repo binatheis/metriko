@@ -232,21 +232,15 @@ jobs:
             WS="${WS//\\//}"
           fi
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
-          # Apple clang has no -fopenmp: conan's llvm-openmp provides libomp, and FindOpenMP finds the flags but
-          # NOT the library, so the module links without the runtime (__kmpc_* undefined). Read the package folder
-          # from conan's CMakeDeps file and add the library to the module and executable link lines. The ';' list
-          # separator keeps it a single argument (CMAKE_ARGS is split on whitespace).
+          # macOS: Apple clang has no -fopenmp; the CMakeLists links libomp by absolute path when find_library
+          # finds it, so point CMAKE_PREFIX_PATH at the conan *package* folder (not the build folder) that
+          # contains lib/libomp.a. CMAKE_PREFIX_PATH is a list, so ';' is the right separator here.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            # locate the runtime from the conan cache (the CMakeDeps file name is not guaranteed) and link it into
-            # both the extension module and the CLI: ';' keeps each flag list a single CMAKE_ARGS token
-            OMP_LIB=$(find "$HOME/.conan2" \( -name 'libomp.dylib' -o -name 'libomp.a' \) -print -quit 2>/dev/null || true)
+            OMP_LIB=$(find "$HOME/.conan2" -path '*/p/lib/libomp.*' -print -quit 2>/dev/null || true)
             echo "libomp: ${OMP_LIB:-<not found>}"
-            if [ -z "$OMP_LIB" ]; then
-              find "$HOME/.conan2" -name 'libomp*' -print 2>/dev/null | head -n 5
-            else
+            if [ -n "$OMP_LIB" ]; then
               OMP_PKG=$(cd "$(dirname "$OMP_LIB")/.." && pwd)
-              echo "llvm-openmp prefix: $OMP_PKG"
-              CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_MODULE_LINKER_FLAGS=-L$OMP_PKG/lib;-lomp -DCMAKE_EXE_LINKER_FLAGS=-L$OMP_PKG/lib;-lomp"
+              CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }};$OMP_PKG"
             fi
           fi
 

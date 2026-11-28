@@ -85,6 +85,17 @@ if (ENABLE_OPENMP OR METRIKO_BUILD_DIST)
     if (OpenMP_CXX_FOUND)
         set(METRIKO_HAVE_OPENMP TRUE)
         message(STATUS "OpenMP found. CXX flags: ${OpenMP_CXX_FLAGS}")
+        # Apple clang: FindOpenMP finds the flags (-Xclang -fopenmp) but not the runtime library, and linking
+        # without it leaves __kmpc_* undefined in the extension module and the CLI. conan's llvm-openmp puts
+        # libomp under CMAKE_PREFIX_PATH, so look for it and link it explicitly.
+        if (APPLE)
+            find_library(METRIKO_OPENMP_LIBRARY omp)
+            if (METRIKO_OPENMP_LIBRARY)
+                message(STATUS "OpenMP runtime: ${METRIKO_OPENMP_LIBRARY}")
+            else()
+                message(WARNING "OpenMP flags found but no libomp: the link will fail on __kmpc_* symbols")
+            endif()
+        endif()
     else()
         message(WARNING "OpenMP not found, building without OpenMP support.")
     endif()
@@ -111,6 +122,10 @@ endif()
 
 if(METRIKO_HAVE_OPENMP)
     target_link_libraries(${PROJECT_NAME} INTERFACE OpenMP::OpenMP_CXX)
+    if (APPLE AND METRIKO_OPENMP_LIBRARY)
+        # absolute path: propagates to _core and metriko-cli without -L/-l juggling
+        target_link_libraries(${PROJECT_NAME} INTERFACE ${METRIKO_OPENMP_LIBRARY})
+    endif()
 endif()
 
 #========= Distributable targets (static core shared by the CLI and the python extension) ==============================

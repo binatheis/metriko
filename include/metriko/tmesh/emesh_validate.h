@@ -107,7 +107,14 @@ inline vec<int> find_zero_width_tquads(const Emesh& tm) {
 
 inline void validate_collapse_done(const Emesh& tm) {
     auto tqids = find_zero_width_tquads(tm);
-    METRIKO_CHECK(tqids.empty(), "t-mesh collapse left {} zero-width tquads: {}", tqids.size(), tqids | vw::take(20) | rg::to<vec<int>>());
+    // the ids are joined by hand: std::format of a range needs the C++23 format-ranges support, which libstdc++ 14
+    // does not ship yet (MSVC does), and this message must compile everywhere
+    if (!tqids.empty()) {
+        std::string ids;
+        for (int i = 0; i < static_cast<int>(tqids.size()) && i < 20; ++i)
+            ids += (i == 0 ? "" : ", ") + std::to_string(tqids[i]);
+        METRIKO_FAIL("t-mesh collapse left {} zero-width tquads: [{}]", tqids.size(), ids);
+    }
 }
 }
 #endif

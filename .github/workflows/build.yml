@@ -54,6 +54,7 @@ jobs:
             cli_archive: metriko-cli-linux-x86_64.tar.gz
             python: /opt/python/cp312-cp312/bin/python3.12
             python313: /opt/python/cp313-cp313/bin/python3.13
+            conan_home: /github/home
             repair: auditwheel
           - name: windows-x86_64
             os: windows-2022
@@ -65,6 +66,7 @@ jobs:
             cli_archive: metriko-cli-windows-x86_64.zip
             python: python
             python313: ""
+            conan_home: "~"
             repair: delvewheel
           # macos-14/15 are the arm64 images (the intel ones are retired per
           # actions/runner-images); the account is on a plan that serves them.
@@ -78,6 +80,7 @@ jobs:
             cli_archive: metriko-cli-macos-arm64.tar.gz
             python: python
             python313: ""
+            conan_home: "~"
             repair: delocate
 
     container: ${{ matrix.container }}
@@ -152,8 +155,9 @@ jobs:
       #    system python3, so the setup-conan action cannot run there).
       - uses: actions/cache@v4
         with:
-          path: ~/.conan2
-          key: ${{ matrix.name }}-conan-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/*') }}
+          # inside the manylinux container HOME is /github/home, not the runner's ~
+          path: ${{ matrix.conan_home }}/.conan2
+          key: ${{ matrix.name }}-conan-${{ hashFiles('conanfile.py', 'conan/profiles/*') }}
           restore-keys: ${{ matrix.name }}-conan-
 
       # ------------------------------------------------------------- toolchain
@@ -227,6 +231,14 @@ jobs:
             WS="${WS//\\//}"
           fi
           export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$WS/build/conan/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=$WS/.deps/${{ matrix.suitesparse }}"
+          # Apple clang has no -fopenmp: conan's llvm-openmp provides libomp, but FindOpenMP only picks it up
+          # when told where the library is (otherwise the module compiles with -fopenmp and fails to link)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            OMP_LIB=$(find "$HOME/.conan2" -name 'libomp.dylib' -print -quit 2>/dev/null || true)
+            if [ -n "$OMP_LIB" ]; then
+              CMAKE_ARGS="$CMAKE_ARGS -DOpenMP_omp_LIBRARY=$OMP_LIB -DOpenMP_CXX_LIB_NAMES=omp -DOpenMP_C_LIB_NAMES=omp"
+            fi
+          fi
 
           echo "CMAKE_ARGS=$CMAKE_ARGS"
           uv build --wheel --no-build-isolation --python "$BUILD_PY" -o wheelhouse/raw

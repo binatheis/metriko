@@ -138,6 +138,10 @@ if(METRIKO_BUILD_DIST)
     set(PMP_BUILD_DOCS     OFF)
     set(PMP_BUILD_VIS      OFF)
     set(PMP_INSTALL        OFF)
+    # _core is a *shared* module and links the static pmp archive: on Linux x86_64 the objects must be PIC, or the
+    # link fails with "relocation R_X86_64_32S ... can not be used when making a shared object" (MSVC and arm64
+    # macOS do not need this, which is why it only shows up on the Linux wheel)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
     set(BUILD_SHARED_LIBS  OFF)
     set(PMP_SCALAR_TYPE    64)
     if(NOT EIGEN3_INCLUDE_DIR)

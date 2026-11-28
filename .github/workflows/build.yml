@@ -196,6 +196,17 @@ jobs:
             --profile:build conan/profiles/${{ matrix.profile }} \
             -s build_type=Release --build=missing
 
+      # actions/cache only saves when the job succeeds and the Linux job is the slow
+      # one to converge: save the conan packages explicitly so a failed run does not
+      # force a 15-minute OpenBLAS rebuild next time.
+      - name: Save conan cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ matrix.conan_home }}/.conan2
+          key: ${{ matrix.name }}-conan-${{ hashFiles('conanfile.py', 'conan/profiles/*') }}
+
       - name: Build SuiteSparse (cached in .deps)
         shell: bash
         run: |

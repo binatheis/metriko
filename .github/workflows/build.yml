@@ -19,10 +19,11 @@ on:
       - "**/*.md"
   workflow_dispatch:
 
-# A new push to the same branch cancels the previous run (cheap on the runners).
+# Queue runs instead of cancelling: a cold Linux job (OpenBLAS + SuiteSparse) is
+# expensive to throw away, so a push waits for the running build to finish.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   # Ninja is used by scikit-build-core on every platform; 4 keeps the memory
